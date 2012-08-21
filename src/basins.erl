@@ -1,23 +1,31 @@
 -module(basins).
--export([is_prime/1, solve/1]).
+-export([solve/1]).
 
 
-is_prime(N) when N =< 0 -> error;
-is_prime(N) when N =< 3 -> true;
-is_prime(N) -> is_prime(N, 2, trunc(math:sqrt(N))).
+% TODO: use gen_fsm
+solve(Max) ->
+	{ok, Tester} = prime_test:start_link(self(), fun prime_test:failing_is_prime/1),
+	io:format("spawned tester ~p~n", [Tester]),
+	[supervisor:start_child(Tester, [N]) || N <- lists:seq(2, Max)],
+	wait(Tester, Max-1).
 
-is_prime(_N, R, Sqrt) when R > Sqrt -> true;
-is_prime(N, R, _Sqrt) when N rem R == 0 -> false;
-is_prime(N, R, Sqrt) -> is_prime(N, R + 1, Sqrt).
+
+append_if_true(Cond, List, Item) when Cond -> [Item | List];
+append_if_true(Cond, List, _Item) when not Cond -> List.
 
 
-solve(Max) -> solve(2, Max, []).
+wait(Tester, Count) -> wait(Tester, Count, []).
 
-solve(N, Max, Results) when N > Max -> Results;
-solve(N, Max, Results) ->
-	NewResults = case is_prime(N) of
-		true -> [N|Results];
-		false -> Results
-	end,
-	solve(N + 1, Max, NewResults).
+wait(_Tester, Count, Results) when Count == 0 -> Results;
+
+wait(Tester, Count, Results) ->
+	io:format("waiting for ~p (~p)~n", [Count, Results]),
+	receive
+		{is_prime, N, IsPrime} ->
+			io:format("is_prime, ~p, ~p~n", [N, IsPrime]),
+			wait(Tester, Count-1, append_if_true(IsPrime, Results, N));
+		Unexpected ->
+			io:format("unexpected msg: ~p~n", [Unexpected]),
+			wait(Tester, Count, Results)
+	end.
 
