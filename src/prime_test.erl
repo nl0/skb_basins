@@ -18,32 +18,28 @@ is_prime(N, R, Sqrt) -> is_prime(N, R + 1, Sqrt).
 
 
 failing_is_prime(N) ->
-	timer:sleep(500),
 	random:seed(now()),
 	case random:uniform(2) of
 		1 -> is_prime(N);
-		2 ->
-			io:format("worker has failed~n"),
-			error(fail)
+		2 -> error(worker_has_failed)
 	end.
 
 
 start_test_link(Pid, PrimeTest, N) ->
 	{ok, spawn_link(fun() -> Pid ! {is_prime, N, PrimeTest(N)} end)}.
 
-start_test_link(Pid, N) ->
-	start_test_link(Pid, fun is_prime/1, N).
-
+start_test_link(Pid, N) -> start_test_link(Pid, fun is_prime/1, N).
 
 
 start_link(Pid) -> supervisor:start_link(?MODULE, [Pid]).
 start_link(Pid, PrimeTest) -> supervisor:start_link(?MODULE, [Pid, PrimeTest]).
 
+
 init(A) ->
 	{
 		ok,
 		{
-			{simple_one_for_one, 1000, 1}, % TODO: make it everlasting)
+			{simple_one_for_one, 1000000, 1},
 			[{
 				?MODULE,
 				{?MODULE, start_test_link, A},
