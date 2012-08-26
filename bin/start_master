@@ -1,0 +1,4 @@
+#!/bin/sh
+cmd="erl -sname master -pa ebin"
+[[ -n "$1" ]] && exec echo "basins:start($1)." | $cmd || exec $cmd
+
