@@ -1,4 +1,4 @@
--module(prime_test).
+-module(prime).
 -export([is_prime/1]).
 
 

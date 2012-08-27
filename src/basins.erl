@@ -27,7 +27,7 @@ prime_test(Pid, N) ->
 			false -> ok;
 			_ -> timer:sleep(1000)
 		end,
-		Pid ! {prime, N, prime_test:is_prime(N)}
+		Pid ! {prime, N, prime:is_prime(N)}
 	end.
 
 
