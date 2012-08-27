@@ -1,6 +1,6 @@
 -module(dpool).
 -behaviour(gen_server).
--record(state, {slaves=[], subscribers=[], workers=[]}).
+-record(state, {slaves=[], subscribers=[], workers=[], q=[]}).
 -record(slave, {node, capacity=2, load=0}).
 -record(worker, {node, f, pid}).
 -export([
@@ -11,17 +11,17 @@
 ]).
 
 
-%TODO: use some kind of queue to limit load
-
 % core functionality
 calc_capacity(Node) -> rpc:call(Node, erlang, system_info, [schedulers])+1.
 
 
-get_capacity(#state{slaves=Slaves}) ->
-	lists:sum([Slave#slave.capacity || Slave <- Slaves]).
+get_capacity(S) ->
+	lists:sum([Slave#slave.capacity || Slave <- S#state.slaves]).
 
-get_load(#state{slaves=Slaves}) ->
-	lists:sum([Slave#slave.load || Slave <- Slaves]).
+get_load(S) ->
+	lists:sum([Slave#slave.load || Slave <- S#state.slaves]).
+
+get_q(S) -> length(S#state.q).
 
 
 attach(Node, Capacity, S=#state{slaves=Slaves}) ->
@@ -54,10 +54,16 @@ unsubscribe(Pid, S=#state{subscribers=Subs}) ->
 	end.
 
 
-notify(S = #state{subscribers=Subs}) ->
-	log:log("dpool: load: ~p/~p~n", [get_load(S), get_capacity(S)]),
-	[Sub ! {dpool, get_capacity(S), get_load(S)} || Sub <- Subs],
-	ok.
+notify(S, state) ->
+	log:log("dpool: load: ~p/~p (~p)~n", [get_load(S), get_capacity(S), get_q(S)]),
+	do_notify(S, {dpool_state, get_load(S), get_capacity(S), get_q(S)}).
+
+
+notify(S, worker, W) ->
+	do_notify(S, {dpool_worker, W}).
+
+
+do_notify(#state{subscribers=Subs}, Msg) -> [Sub ! Msg || Sub <- Subs], ok.
 
 
 get_nodes_capacity(#state{slaves=Slaves}) ->
@@ -67,14 +73,20 @@ get_nodes_capacity(#state{slaves=Slaves}) ->
 
 choose_node(S) ->
 	case get_nodes_capacity(S) of
-		[] -> error(no_workers);
-		Nodes -> element(1, hd(Nodes))
+		[] -> no_workers;
+		[{Node, _} | _] -> Node
 	end.
 
 
-start_worker(F, S) -> start_worker(choose_node(S), F, S).
+start_worker(F, S) ->
+	log:log("dpool: trying to start worker ~p~n", [F]),
+	case choose_node(S) of
+		no_workers -> {queued, S#state{q=S#state.q++[F]}};
+		Node -> start_worker(Node, F, S)
+	end.
 
 start_worker(Node, F, S = #state{slaves=Slaves}) ->
+	log:log("dpool: starting worker ~p on node ~p~n", [F, Node]),
 	case lists:keyfind(Node, 2, Slaves) of
 		false -> {not_attached, S};
 		Slave ->
@@ -100,14 +112,27 @@ remove_worker(Pid, S=#state{slaves=Slaves}) ->
 			{Worker, S#state{workers=Workers, slaves=NewSlaves}}
 	end.
 
-restart_worker(Pid, S) -> restart_worker(Pid, choose_node(S), S).
-
-restart_worker(Pid, Node, S) ->
+restart_worker(Pid, S) ->
 	case remove_worker(Pid, S) of
 		A = {not_running, _} -> A;
-		{Worker, NS} -> start_worker(Node, Worker#worker.f, NS)
+		{W, NS} -> start_worker(W#worker.f, NS)
 	end.
 
+start_worker_from_q(S) ->
+	case S#state.q of
+		[] -> {empty_q, S};
+		[Worker | Queue] ->
+			case get_load(S) >= get_capacity(S) of
+				true -> {out_of_capacity, S};
+				false ->
+					{Pid, S1} = start_worker(Worker, S),
+					{Pid, S1#state{q=Queue}}
+			end
+	end.
+
+handle_worker_exit(Pid, S) ->
+	{_, S1} = remove_worker(Pid, S),
+	start_worker_from_q(S1).
 
 % callbacks
 init(_Args) ->
@@ -119,19 +144,27 @@ handle_call(capacity, _From, S) -> {reply, get_capacity(S), S};
 
 handle_call(load, _From, S) -> {reply, get_load(S), S};
 
+handle_call(q, _From, S) -> {reply, get_q(S), S};
+
 
 handle_call({attach, Node}, From, S) ->
 	handle_call({attach, Node, calc_capacity(Node)}, From, S);
 
 handle_call({attach, Node, Capacity}, _From, S) ->
-	{Reply, NS} = attach(Node, Capacity, S),
-	notify(NS),
-	{reply, Reply, NS};
+	{Reply, S1} = attach(Node, Capacity, S),
+	{W, S2} = start_worker_from_q(S1),
+	notify(S2, state),
+	case W of
+		empty_q -> ok;
+		out_of_capacity -> ok;
+		_ -> notify(S2, worker, W)
+	end,
+	{reply, Reply, S2};
 
 
 handle_call({detach, Node}, _From, S) ->
 	{Reply, NS} = detach(Node, S),
-	notify(NS),
+	notify(NS, state),
 	{reply, Reply, NS};
 
 
@@ -146,10 +179,13 @@ handle_call(unsubscribe, {Pid, _Ref}, S) ->
 
 
 handle_call({start, F}, _From, S) ->
-	log:log("dpool: starting worker ~p~n", [F]),
-	{Worker, NS} = start_worker(F, S),
-	notify(NS),
-	{reply, Worker, NS}.
+	{W, NS} = start_worker(F, S),
+	notify(NS, state),
+	case W of
+		queued -> ok;
+		_ -> notify(NS, worker, W)
+	end,
+	{reply, W, NS}.
 
 handle_cast(Req, S) ->
 	log:log("dpool: unexpected cast: ~p~n", [Req]),
@@ -159,15 +195,20 @@ handle_cast(Req, S) ->
 handle_info({nodedown, Node}, S) ->
 	log:log("dpool: node ~p down~n", [Node]),
 	{_, NS} = detach(Node, S),
-	notify(NS),
+	notify(NS, state),
 	{noreply, NS};
 
 
 handle_info({'EXIT', Pid, normal}, S) ->
 	log:log("dpool: worker ~p has exited normally~n", [Pid]),
-	{_, NS} = remove_worker(Pid, S),
-	notify(NS),
-	{noreply, NS};
+	{W, S1} = handle_worker_exit(Pid, S),
+	notify(S1, state),
+	case W of
+		empty_q -> ok;
+		out_of_capacity -> ok;
+		_ -> notify(S1, worker, W)
+	end,
+	{noreply, S1};
 
 handle_info({'EXIT', Pid, Reason}, S) ->
 	log:log("dpool: worker ~p has exited with reason ~p -> restarting~n", [Pid, Reason]),

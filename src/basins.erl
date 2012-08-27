@@ -23,7 +23,7 @@ prime_test(Pid, N) ->
 
 
 last_state(Last) ->
-	receive {dpool, C, L} -> last_state({C, L})
+	receive {dpool_state, L, C, Q} -> last_state({L, C, Q})
 	after 0 -> Last
 	end.
 
@@ -37,22 +37,23 @@ wait(Pool, 1, 0) ->
 wait(Pool, N, Wip) ->
 	io:format("~p (~p+~p) numbers to test~n", [N+Wip, Wip, N]),
 	receive
-		{dpool, Capacity, Load} ->
-			{NewCapacity, NewLoad} = last_state({Capacity, Load}),
+		{dpool_state, L, C, Q} ->
+			{LastL, LastC, LastQ} = last_state({L, C, Q}),
 			if N =< 1 ->
 				log:log("waiting for ~p workers to finish~n", [Wip]),
 				wait(Pool, N, Wip);
 			true ->
-				case NewLoad >= NewCapacity of
+				case LastL >= LastC of
 				true ->
-					log:log("dpool is overloaded (~p/~p) -> waiting~n", [NewLoad, NewCapacity]),
+					log:log("dpool is overloaded: ~p/~p (~p) -> waiting~n", [LastL, LastC, LastQ]),
 					wait(Pool, N, Wip);
 				false ->
-					log:log("dpool load is ~p/~p -> running new worker (~p)~n", [NewLoad, NewCapacity, N]),
+					log:log("dpool load is ~p/~p (~p) -> running new worker (~p)~n", [LastL, LastC, LastQ, N]),
 					gen_server:call(Pool, {start, prime_test(self(), N)}),
 					wait(Pool, N-1, Wip+1)
 				end
 			end;
+		{dpool_worker, _} -> wait(Pool, N, Wip);
 		{prime, P, true} ->
 			log:log("~p is prime~n", [P]),
 			wait(Pool, N, Wip-1);
@@ -80,7 +81,8 @@ attach(Name, Master) ->
 	monitor(process, {Name, Master}),
 	receive
 		{nodedown, Master} ->
-			log:log("master node ~p down~n", [Master]);
+			log:log("master node ~p down~n", [Master]),
+			monitor_node(Master, false);
 		{'DOWN', Ref, process, {Name, Master}, Reason} ->
 			log:log("master process ~p has exited for reason ~p~n", [Ref, Reason]);
 		Unexpected ->
