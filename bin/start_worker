@@ -1,3 +1,5 @@
 #!/bin/sh
-exec echo "basins:attach('master@`hostname`')." | erl -sname $1 -pa ebin
+[[ -n "$CONFIG" ]] && cfg="-config $CONFIG"
+exec="application:load(skb_basins), basins:attach('master@`hostname`')."
+exec echo $exec | erl -sname $1 -pa ebin $cfg
 

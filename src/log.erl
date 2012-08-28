@@ -7,8 +7,8 @@ log(S) -> do_log([S]).
 log(Format, Terms) -> do_log([Format, Terms]).
 
 do_log(A) ->
-	case os:getenv("DEBUG") of
-		false -> ok;
-		_ -> apply(io, format, A)
+	case application:get_env(skb_basins, debug) of
+		{ok, false} -> ok;
+		{ok, true} -> apply(io, format, A)
 	end.
 

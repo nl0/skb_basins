@@ -1,0 +1,15 @@
+{application, skb_basins, [
+	{vsn, "0.0.1"},
+	{modules, [
+		basins,
+		dpool,
+		log,
+		prime
+	]},
+	{applications, [stdlib, kernel]},
+	{env, [
+		{debug, false},
+		{file, "basins.txt"}
+	]}
+]}.
+

@@ -1,4 +1,6 @@
 #!/bin/sh
-cmd="erl -sname master -pa ebin"
-[[ -n "$1" ]] && exec echo "basins:start($1)." | $cmd || exec $cmd
+[[ -n "$CONFIG" ]] && cfg="-config $CONFIG"
+exec="application:load(skb_basins)."
+[[ -n "$1" ]] && exec="$exec basins:start($1)."
+exec echo $exec | erl -sname master -pa ebin $cfg
 

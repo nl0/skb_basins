@@ -9,7 +9,8 @@ start(Max, Name) ->
 	true = register(Name, Pool),
 	ok = gen_server:call(Pool, subscribe),
 	log:log("spawned pool ~p at node ~p, registered as ~p~n", [Pool, node(), Name]),
-	{ok, File} = file:open("basins.txt", [write]),
+	{ok, FileName} = application:get_env(skb_basins, file),
+	{ok, File} = file:open(FileName, [write]),
 	PrimeHandler = fun(P, IsLast) ->
 		Fmt = case IsLast of
 			last -> "~p~n";
@@ -23,9 +24,9 @@ start(Max, Name) ->
 
 prime_test(Pid, N) ->
 	fun() ->
-		case os:getenv("DEBUG") of
-			false -> ok;
-			_ -> timer:sleep(1000)
+		case application:get_env(skb_basins, debug) of
+			{ok, false} -> ok;
+			{ok, true} -> timer:sleep(1000)
 		end,
 		Pid ! {prime, N, prime:is_prime(N)}
 	end.
